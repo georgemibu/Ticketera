@@ -41,13 +41,10 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    const API_URL = 'https://mi-backend-prueba.onrender.com';
-
-
     async function handlePurchase(product) {
         console.log('Attempting to purchase:', product);
         try {
-            const response = await fetch('${API_URL}/create-payment', {
+            const response = await fetch('https://ticketera-a.onrender.com/create-payment', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
