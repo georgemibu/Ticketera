@@ -44,7 +44,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function handlePurchase(product) {
         console.log('Attempting to purchase:', product);
         try {
-            const response = await fetch('https://ticketera-a.onrender.com/create-payment', {
+            const response = await fetch('https://ticketera-1-n5sl.onrender.com/create-payment', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
