@@ -117,16 +117,17 @@ router.post("/mercadopago", async (req, res) => {
     console.log("🔔 Notificación de Mercado Pago recibida para pago:", paymentId);
 
     try {
-      const payment = await new Payment(mpClient).get({ id: paymentId });
+      const raw = await new Payment(mpClient).get({ id: paymentId });
+      // SDKs sometimes nest the actual payment object in .body or .response
+      const payment = raw || raw?.body || raw?.response || {};
 
       if (payment.status === "approved" && payment.external_reference) {
         console.log("✅ Pago de Mercado Pago aprobado para orden:", payment.external_reference);
-        
         await knex.transaction(async (trx) => {
           await processPaidOrder(trx, payment.external_reference);
         });
       } else {
-        console.log(`ℹ️ Pago de MP ${paymentId} no aprobado aún (estado: ${payment.status}).`);
+        console.log(`ℹ️ Pago de MP ${paymentId} no aprobado aún (estado: ${payment.status}). Full response:`, raw);
       }
     } catch (error) {
       console.error("❌ Error procesando el webhook de Mercado Pago:", error);

@@ -50,18 +50,23 @@ router.post("/", async (req, res) => {
           pending: `${process.env.BASE_URL}/pending`,
         },
         auto_return: "approved",
-        notification_url: `${process.env.API_URL}/api/webhook/mercadopago`,
+        // Use API_URL for webhooks if present; fallback to BASE_URL (not ideal for production)
+        notification_url: `${process.env.API_URL || process.env.BASE_URL}/api/webhook/mercadopago`,
         external_reference: orderId,
       };
 
       console.log("Mercado Pago preference body:", preferenceBody);
 
-      const result = await preference.create({
-        body: preferenceBody,
-      });
+      const result = await preference.create({ body: preferenceBody });
 
-      checkoutUrl = result.init_point;
-      sessionId = result.id; // ID de la preferencia de MP
+      // mercadopago SDK may return init_point in different shapes; try common fallbacks
+      checkoutUrl = result.init_point || result.body?.init_point || result.response?.init_point;
+      sessionId = result.id || result.body?.id || result.response?.id; // ID de la preferencia de MP
+
+      if (!checkoutUrl) {
+        console.warn('No init_point received from Mercado Pago preference:', result);
+        return res.status(502).json({ error: 'No checkout url from Mercado Pago' });
+      }
 
     } else {
       // --- LÓGICA DE STRIPE (DEFAULT) ---
