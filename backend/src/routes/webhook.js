@@ -1,6 +1,6 @@
 import express from "express";
 import Stripe from "stripe";
-import { MercadoPagoConfig, Payment } from "mercadopago";
+import fetch from 'node-fetch';
 import knex from "../db/knexClient.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -112,30 +112,69 @@ router.post(
 router.post("/mercadopago", async (req, res) => {
   const { body } = req;
 
-  if (body.type === "payment") {
-    const paymentId = body.data.id;
-    console.log("🔔 Notificación de Mercado Pago recibida para pago:", paymentId);
-
-    try {
-      const raw = await new Payment(mpClient).get({ id: paymentId });
-      // SDKs sometimes nest the actual payment object in .body or .response
-      const payment = raw || raw?.body || raw?.response || {};
-
-      if (payment.status === "approved" && payment.external_reference) {
-        console.log("✅ Pago de Mercado Pago aprobado para orden:", payment.external_reference);
-        await knex.transaction(async (trx) => {
-          await processPaidOrder(trx, payment.external_reference);
-        });
-      } else {
-        console.log(`ℹ️ Pago de MP ${paymentId} no aprobado aún (estado: ${payment.status}). Full response:`, raw);
-      }
-    } catch (error) {
-      console.error("❌ Error procesando el webhook de Mercado Pago:", error);
-      return res.status(500).json({ error: "Error al procesar la notificación." });
-    }
+  // Aseguramos responder rápido para tipos que no manejamos
+  if (!body || body.type !== "payment") {
+    return res.status(200).send("Evento ignorado");
   }
 
-  res.status(200).send("Webhook de Mercado Pago recibido");
+  const paymentId = body.data && body.data.id;
+  if (!paymentId) {
+    console.warn('Notificación de MP sin payment id:', body);
+    return res.status(400).json({ error: 'No payment id in notification' });
+  }
+
+  console.log("🔔 Notificación de Mercado Pago recibida para pago:", paymentId);
+
+  try {
+    // Consultamos directamente la API de MP para obtener el estado real del pago
+    const mpRes = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+      headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_ACCESS_TOKEN}` },
+    });
+
+    if (!mpRes.ok) {
+      const text = await mpRes.text();
+      console.error('Error consultando MP payments API:', mpRes.status, text);
+      return res.status(500).json({ error: 'Error consultando Mercado Pago' });
+    }
+
+    const payment = await mpRes.json();
+
+    // Obtener external_reference que usamos como orderId
+    const externalRef = payment.external_reference;
+    if (!externalRef) {
+      console.warn('Pago MP sin external_reference:', payment);
+      return res.status(200).send('No external_reference');
+    }
+
+    // Buscar la orden asociada
+    const order = await knex('orders').where({ id: externalRef }).first();
+    if (!order) {
+      console.warn(`No se encontró orden para external_reference=${externalRef}`);
+      return res.status(200).send('Orden no encontrada');
+    }
+
+    // Validación de monto (si existe amount_cents en la orden)
+    const paidAmountCents = Math.round((payment.transaction_amount || payment.transaction_amount_refunded || 0) * 100);
+    if (order.amount_cents && paidAmountCents !== Number(order.amount_cents)) {
+      console.warn(`Monto pagado no coincide. Orden: ${order.amount_cents}c, MP: ${paidAmountCents}c`);
+      // No procesamos la orden automáticamente si el monto no coincide
+      return res.status(200).send('Monto no coincide');
+    }
+
+    if (payment.status === 'approved' || payment.status === 'paid' || payment.status_detail === 'accredited') {
+      // Idempotencia: processPaidOrder actualiza solo si status = 'pending'
+      await knex.transaction(async (trx) => {
+        await processPaidOrder(trx, order.id);
+      });
+      return res.status(200).send('Orden procesada');
+    } else {
+      console.log(`Pago MP ${paymentId} recibido con estado ${payment.status}. No se procesará.`);
+      return res.status(200).send('Pago no aprobado');
+    }
+  } catch (error) {
+    console.error('❌ Error procesando el webhook de Mercado Pago:', error);
+    return res.status(500).json({ error: 'Error al procesar la notificación.' });
+  }
 });
 
 export default router;
