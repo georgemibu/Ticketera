@@ -14,7 +14,7 @@ const TICKET_PRICE_ARS = 1000;
 // POST /checkout
 router.post("/", async (req, res) => {
   try {
-    const { email, quantity, paymentMethod = "stripe" } = req.body;
+    const { email, quantity, paymentMethod = "stripe", eventId } = req.body;
 
     if (!email || !quantity) {
       return res.status(400).json({ error: "Email y quantity son requeridos" });
@@ -23,6 +23,14 @@ router.post("/", async (req, res) => {
     let checkoutUrl;
     let sessionId;
     const orderId = uuidv4(); // Usamos un ID nuestro para la external_reference
+
+    // Encontrar o crear user
+    let user = await db('users').where({ email }).first();
+    if (!user) {
+      const newUserId = uuidv4();
+      const [newUser] = await db('users').insert({ id: newUserId, email }).returning('*');
+      user = newUser;
+    }
 
     if (paymentMethod === "mercadopago") {
       // --- LÓGICA DE MERCADO PAGO (usando API HTTP directa) ---
@@ -111,16 +119,22 @@ router.post("/", async (req, res) => {
     }
 
     // 2. Guardar orden en la base de datos
-    // Nota: La columna 'stripe_session_id' ahora guardará el ID de sesión de cualquier proveedor.
+    // Guardamos event_id y user_id si están disponibles
+    const amount_cents = TICKET_PRICE_ARS * 100 * Number(quantity || 1);
+    const orderInsert = {
+      id: orderId, // Usamos nuestro propio UUID
+      payment_session_id: sessionId,
+      payment_provider: paymentMethod,
+      email,
+      quantity,
+      status: "pending",
+      amount_cents,
+    };
+    if (eventId) orderInsert.event_id = eventId;
+    if (user && user.id) orderInsert.user_id = user.id;
+
     const [order] = await db("orders")
-      .insert({
-        id: orderId, // Usamos nuestro propio UUID
-        payment_session_id: sessionId,
-        payment_provider: paymentMethod,
-        email,
-        quantity,
-        status: "pending",
-      })
+      .insert(orderInsert)
       .returning("*");
 
     console.log("ORDEN CREADA:", order);
