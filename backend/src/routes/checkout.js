@@ -1,16 +1,13 @@
 import express from "express";
 import Stripe from "stripe";
-import { MercadoPagoConfig, Preference } from "mercadopago";
 import db from "../db/knexClient.js";
 import { v4 as uuidv4 } from "uuid";
+import fetch from "node-fetch";
 
 const router = express.Router();
 
 // --- CONFIGURACIONES ---
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-const mpClient = new MercadoPagoConfig({
-  accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN,
-});
 
 const TICKET_PRICE_ARS = 1000;
 
@@ -28,9 +25,9 @@ router.post("/", async (req, res) => {
     const orderId = uuidv4(); // Usamos un ID nuestro para la external_reference
 
     if (paymentMethod === "mercadopago") {
-      // --- LÓGICA DE MERCADO PAGO ---
-      const preference = new Preference(mpClient);
-
+      // --- LÓGICA DE MERCADO PAGO (usando API HTTP directa) ---
+      const baseUrl = process.env.BASE_URL || "http://localhost:5173";
+      
       const preferenceBody = {
         items: [
           {
@@ -45,27 +42,46 @@ router.post("/", async (req, res) => {
           email: email,
         },
         back_urls: {
-          success: `${process.env.BASE_URL}/success`,
-          failure: `${process.env.BASE_URL}/cancel`,
-          pending: `${process.env.BASE_URL}/pending`,
+          success: `${baseUrl}/success`,
+          failure: `${baseUrl}/cancel`,
+          pending: `${baseUrl}/pending`,
         },
-        auto_return: "approved",
-        // Use API_URL for webhooks if present; fallback to BASE_URL (not ideal for production)
-        notification_url: `${process.env.API_URL || process.env.BASE_URL}/api/webhook/mercadopago`,
+        notification_url: `${process.env.API_URL || baseUrl}/api/webhook/mercadopago`,
         external_reference: orderId,
       };
 
       console.log("Mercado Pago preference body:", preferenceBody);
 
-      const result = await preference.create({ body: preferenceBody });
+      // Call Mercado Pago API directly instead of using SDK
+      try {
+        const mpResponse = await fetch("https://api.mercadopago.com/checkout/preferences", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${process.env.MERCADOPAGO_ACCESS_TOKEN}`,
+          },
+          body: JSON.stringify(preferenceBody),
+        });
 
-      // mercadopago SDK may return init_point in different shapes; try common fallbacks
-      checkoutUrl = result.init_point || result.body?.init_point || result.response?.init_point;
-      sessionId = result.id || result.body?.id || result.response?.id; // ID de la preferencia de MP
+        if (!mpResponse.ok) {
+          const errorText = await mpResponse.text();
+          console.error(`Mercado Pago API error (${mpResponse.status}):`, errorText);
+          return res.status(502).json({ error: `Mercado Pago error: ${mpResponse.status} - ${errorText}` });
+        }
 
-      if (!checkoutUrl) {
-        console.warn('No init_point received from Mercado Pago preference:', result);
-        return res.status(502).json({ error: 'No checkout url from Mercado Pago' });
+        const result = await mpResponse.json();
+        console.log("Mercado Pago preference response:", result);
+
+        checkoutUrl = result.init_point;
+        sessionId = result.id;
+
+        if (!checkoutUrl || !sessionId) {
+          console.warn('No init_point or id in Mercado Pago response:', result);
+          return res.status(502).json({ error: 'Invalid Mercado Pago response' });
+        }
+      } catch (mpErr) {
+        console.error("Mercado Pago fetch error:", mpErr);
+        return res.status(502).json({ error: "Error connecting to Mercado Pago" });
       }
 
     } else {
